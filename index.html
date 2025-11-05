@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>AR Silhouette Camera</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--accent:#10b981;--muted:#9ca3af}
+    html,body{height:100%;margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:linear-gradient(180deg,#041124 0%,#07182b 100%);color:#e6eef6}
+    .app{min-height:100vh;display:flex;flex-direction:column;align-items:center;gap:10px;padding:18px}
+    header{width:100%;max-width:900px;display:flex;align-items:center;justify-content:space-between}
+    h1{font-size:18px;margin:0}
+    main{width:100%;max-width:900px;background:rgba(255,255,255,0.02);border-radius:12px;padding:8px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+
+    .camera-wrap{position:relative;aspect-ratio:3/4;width:100%;max-width:540px;background:#000;border-radius:10px;overflow:hidden}
+    video#video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
+
+    /* silhouette overlay (centered) */
+    .silhouette{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+    .silhouette svg{width:62%;max-width:340px;opacity:0.85;filter:drop-shadow(0 10px 18px rgba(0,0,0,0.45))}
+
+    .controls{display:flex;gap:8px;padding:10px;align-items:center;justify-content:center}
+    .btn{background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));border:1px solid rgba(255,255,255,0.04);padding:8px 12px;border-radius:8px;color:var(--muted);font-weight:600}
+    .btn.primary{background:var(--accent);color:#04201a}
+
+    .status{padding:8px;text-align:center;color:var(--muted);font-size:13px}
+
+    /* modal */
+    .modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:var(--card);padding:14px;border-radius:12px;box-shadow:0 12px 40px rgba(2,6,23,0.7);z-index:60;display:none;max-width:92vw}
+    .modal.show{display:block}
+    .capture-img{max-width:100%;border-radius:8px;display:block;margin-bottom:8px}
+    .modal .row{display:flex;gap:8px;justify-content:center}
+
+    footer{color:var(--muted);font-size:12px;padding:8px;text-align:center}
+
+    /* small screens */
+    @media (max-width:420px){.silhouette svg{width:78%}}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>AR Silhouette Camera</h1>
+      <div class="actions">
+        <button id="downloadAll" class="btn" title="Download last capture">Download</button>
+      </div>
+    </header>
+
+    <main>
+      <div class="camera-wrap">
+        <video id="video" autoplay playsinline></video>
+
+        <div class="silhouette" aria-hidden="true">
+          <!-- Inline silhouette SVG (human-like) -->
+          <svg viewBox="0 0 200 300" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <style>.s{fill:none;stroke:#ffffff;stroke-width:3;stroke-linecap:round;stroke-linejoin:round;opacity:0.95}</style>
+            </defs>
+            <!-- simple stylized person silhouette; filled path used for mask comparison -->
+            <g transform="translate(0,0)">
+              <path id="silpath" d="M100 26c10 0 18 8 18 18s-8 18-18 18-18-8-18-18 8-18 18-18zM68 86c0 18 12 26 32 26s32-8 32-26v28c0 10-6 16-6 28 0 20-10 28-26 28-16 0-26-8-26-28 0-12-6-18-6-28V86zM50 220c6 18 20 28 36 28h28c16 0 30-10 36-28 4-10 6-22 6-34v-10c0-14-10-26-26-26h-90c-16 0-26 12-26 26v10c0 12 2 24 6 34z" class="s" fill="rgba(255,255,255,0.08)"/>
+            </g>
+          </svg>
+        </div>
+      </div>
+      <div class="controls">
+        <button id="startBtn" class="btn primary">Start Camera</button>
+        <button id="toggleOverlay" class="btn">Toggle Overlay</button>
+        <label style="color:var(--muted);font-size:13px;margin-left:8px">Auto-capture threshold</label>
+        <input id="threshold" type="range" min="0.05" max="0.8" step="0.01" value="0.24" style="width:140px">
+      </div>
+
+      <div class="status" id="status">Status: idle — open camera to start.</div>
+    </main>
+
+    <footer>
+      Tip: align the subject to the silhouette and hold steady. The page runs entirely in your browser; no uploads by default.
+    </footer>
+
+    <!-- Hidden canvases used for processing -->
+    <canvas id="procCanvas" width="640" height="853" style="display:none"></canvas>
+    <canvas id="maskCanvas" width="640" height="853" style="display:none"></canvas>
+
+    <!-- modal for review -->
+    <div id="modal" class="modal" role="dialog" aria-modal="true">
+      <img id="capturedImg" class="capture-img" alt="captured photo">
+      <div class="row">
+        <button id="retake" class="btn">Retake</button>
+        <button id="accept" class="btn primary">Accept & Unlock</button>
+      </div>
+    </div>
+
+    <!-- unlock modal -->
+    <div id="unlock" class="modal" style="top:55%">
+      <h3 style="margin-top:4px">Unlocked!</h3>
+      <p style="color:var(--muted);margin-top:6px">You matched the silhouette and unlocked special content.</p>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px">
+        <button id="closeUnlock" class="btn primary">Close</button>
+      </div>
+    </div>
+
+  </div>
+  <script>
+  // ---- Simple silhouette-matching camera script ----
+  (function(){
+    const video = document.getElementById('video');
+    const procCanvas = document.getElementById('procCanvas');
+    const maskCanvas = document.getElementById('maskCanvas');
+    const ctx = procCanvas.getContext('2d');
+    const mctx = maskCanvas.getContext('2d');
+    const startBtn = document.getElementById('startBtn');
+    const toggleOverlay = document.getElementById('toggleOverlay');
+    const statusEl = document.getElementById('status');
+    const modal = document.getElementById('modal');
+    const unlock = document.getElementById('unlock');
+    const capturedImg = document.getElementById('capturedImg');
+    const retakeBtn = document.getElementById('retake');
+    const acceptBtn = document.getElementById('accept');
+    const downloadAll = document.getElementById('downloadAll');
+    const thresholdInput = document.getElementById('threshold');
+
+    let stream = null;
+    let running = false;
+    let lastCaptureDataUrl = null;
+    let overlayVisible = true;
+    let checkingLoop = null;
+
+    // prepare silhouette mask once (drawn from inline SVG path)
+    function prepareMask(){
+      // maskCanvas matches the video stream size; we'll set size when stream starts
+      const svgPath = document.getElementById('silpath');
+      // we'll draw the same SVG into the mask canvas by creating an SVG image
+      const svg = svgPath.parentElement.parentElement.innerHTML; // inner SVG markup
+      return svg;
+    }
+    const svgMarkup = prepareMask();
+
+    async function startCamera(){
+      try{
+        statusEl.textContent = 'Status: requesting camera...';
+        stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}, audio:false});
+        video.srcObject = stream;
+        await video.play();
+
+        // set canvas sizes to video resolution (approx)
+        const vw = video.videoWidth || 640;
+        const vh = video.videoHeight || Math.round((video.videoWidth||640)*4/3);
+        procCanvas.width = vw; procCanvas.height = vh;
+        maskCanvas.width = vw; maskCanvas.height = vh;
+
+        // render SVG silhouette into maskCanvas centered & scaled
+        const svgBlob = new Blob([`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300">${svgMarkup}</svg>`], {type:'image/svg+xml'});
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        img.onload = ()=>{
+          // fill mask canvas with black then draw silhouette white
+          mctx.clearRect(0,0,maskCanvas.width,maskCanvas.height);
+          mctx.fillStyle='black'; mctx.fillRect(0,0,maskCanvas.width,maskCanvas.height);
+          // compute draw size to keep aspect ratio and center
+          const scale = Math.min(maskCanvas.width/200, maskCanvas.height/300) * 0.62; // same relative size as CSS
+          const dw = 200 * scale; const dh = 300 * scale;
+          const dx = (maskCanvas.width - dw)/2; const dy = (maskCanvas.height - dh)/2;
+          mctx.drawImage(img, dx, dy, dw, dh);
+          // convert to binary mask
+          const d = mctx.getImageData(0,0,maskCanvas.width,maskCanvas.height);
+          for(let i=0;i<d.data.length;i+=4){
+            const lum = d.data[i];
+            if(lum>10){ d.data[i]=d.data[i+1]=d.data[i+2]=255; d.data[i+3]=255; } else { d.data[i]=d.data[i+1]=d.data[i+2]=0; d.data[i+3]=255; }
+          }
+          mctx.putImageData(d,0,0);
+          URL.revokeObjectURL(url);
+        };
+        img.src = url;
+
+        statusEl.textContent = 'Status: camera open — align subject to silhouette.';
+        if(!running){
+          running = true; checkLoop();
+        }
+      }catch(err){
+        console.error(err); statusEl.textContent = 'Error: camera access denied or not available.';
+      }
+    }
+
+    function brightness(r,g,b){ return 0.2126*r + 0.7152*g + 0.0722*b; }
+
+    function computeMatch(){
+      // draw current frame to procCanvas
+      ctx.drawImage(video, 0, 0, procCanvas.width, procCanvas.height);
+      // get image data
+      const id = ctx.getImageData(0,0,procCanvas.width,procCanvas.height);
+      // quick edge-ish map: compute luminosity difference with blurred neighbor
+      // We'll compute a simple high-pass by comparing each pixel with an average of neighbors
+      const w = id.width, h = id.height; const out = new Uint8ClampedArray(w*h);
+      for(let y=1;y<h-1;y++){
+        for(let x=1;x<w-1;x++){
+          const i = (y*w + x)*4;
+          const lum = brightness(id.data[i],id.data[i+1],id.data[i+2]);
+          // 4-neighbor average
+          const lumN = brightness(id.data[i-4],id.data[i-3],id.data[i-2]);
+          const lumS = brightness(id.data[i+4],id.data[i+5],id.data[i+6]);
+          const lumW = brightness(id.data[i-4*w],id.data[i-4*w+1],id.data[i-4*w+2]);
+          const lumE = brightness(id.data[i+4*w],id.data[i+4*w+1],id.data[i+4*w+2]);
+          const avg = (lumN+lumS+lumW+lumE)/4;
+          const val = Math.abs(lum - avg);
+          out[y*w + x] = val;
+        }
+      }
+      // threshold the out map to binary edges — choose threshold adaptively
+      let sum=0; let maxv=0;
+      for(let i=0;i<out.length;i++){ if(out[i]>maxv) maxv=out[i]; sum+=out[i]; }
+      const mean = sum/out.length;
+      const edgeThreshold = Math.max(12, mean*1.6);
+      // now compute overlap between edge map and silhouette mask
+      const maskData = mctx.getImageData(0,0,maskCanvas.width,maskCanvas.height);
+      let overlap=0, maskCount=0, edgeCount=0;
+      for(let y=0;y<h;y++){
+        for(let x=0;x<w;x++){
+          const idx = y*w + x;
+          const edgeVal = out[idx] > edgeThreshold ? 1 : 0;
+          const mIdx = idx*4;
+          const inMask = maskData.data[mIdx] > 10 ? 1 : 0;
+          if(inMask) maskCount++;
+          if(edgeVal) edgeCount++;
+          if(edgeVal && inMask) overlap++;
+        }
+      }
+      // compute score: fraction of silhouette area that contains edges, but normalized
+      const coverage = maskCount>0 ? (overlap / maskCount) : 0;
+      const precision = edgeCount>0 ? (overlap / edgeCount) : 0;
+      // combine metrics favoring coverage but also penalize many stray edges
+      const score = coverage * 0.7 + precision * 0.3;
+      return {score, coverage, precision, overlap, maskCount, edgeCount};
+    }
+
+    async function checkLoop(){
+      if(!running) return;
+      try{
+        const res = computeMatch();
+        const thr = parseFloat(thresholdInput.value);
+        statusEl.textContent = `Score: ${res.score.toFixed(3)} | coverage ${(res.coverage*100).toFixed(1)}% | precision ${(res.precision*100).toFixed(1)}%`;
+        if(res.score >= thr){
+          // trigger capture
+          console.log('match!',res);
+          await autoCapture();
+          // pause checking for 2.5s to avoid multiple captures
+          await new Promise(r=>setTimeout(r,2500));
+        }
+      }catch(e){console.error(e)}
+      checkingLoop = requestAnimationFrame(checkLoop);
+    }
+
+    async function autoCapture(){
+      // draw high-res frame then produce dataURL
+      const w = procCanvas.width, h = procCanvas.height;
+      ctx.drawImage(video,0,0,w,h);
+      const dataUrl = procCanvas.toDataURL('image/jpeg', 0.92);
+      lastCaptureDataUrl = dataUrl;
+      capturedImg.src = dataUrl;
+      modal.classList.add('show');
+      statusEl.textContent = 'Captured — review in the dialog.';
+    }
+
+    function stopCamera(){
+      if(stream){
+        stream.getTracks().forEach(t=>t.stop());
+        stream = null;
+      }
+      running = false;
+      if(checkingLoop) cancelAnimationFrame(checkingLoop);
+      statusEl.textContent = 'Status: camera stopped.';
+    }
+
+    startBtn.addEventListener('click', ()=>{
+      if(!stream) startCamera(); else { stopCamera(); }
+      startBtn.textContent = stream ? 'Stop Camera' : 'Start Camera';
+    });
+
+    toggleOverlay.addEventListener('click', ()=>{
+      overlayVisible = !overlayVisible;
+      document.querySelector('.silhouette').style.display = overlayVisible ? 'flex' : 'none';
+    });
+
+    retakeBtn.addEventListener('click', ()=>{
+      modal.classList.remove('show');
+      lastCaptureDataUrl = null;
+      capturedImg.src = '';
+      statusEl.textContent = 'Status: retake — align & hold.';
+    });
+
+    acceptBtn.addEventListener('click', ()=>{
+      modal.classList.remove('show');
+      unlock.classList.add('show');
+      // save to localStorage (example) — beware of storage limits for large images
+      try{
+        if(lastCaptureDataUrl) localStorage.setItem('last_capture', lastCaptureDataUrl);
+      }catch(e){ console.warn('Could not store image in localStorage', e); }
+      statusEl.textContent = 'Unlocked content available.';
+    });
+
+    document.getElementById('closeUnlock').addEventListener('click', ()=>{ unlock.classList.remove('show'); });
+
+    downloadAll.addEventListener('click', ()=>{
+      if(!lastCaptureDataUrl){ alert('No capture to download.'); return; }
+      const a = document.createElement('a'); a.href = lastCaptureDataUrl; a.download = 'capture.jpg'; a.click();
+    });
+
+    // Warn on page hide
+    document.addEventListener('visibilitychange', ()=>{ if(document.hidden){ stopCamera(); startBtn.textContent='Start Camera'; } });
+
+  })();
+  </script>
+</body>
+</html>
